@@ -1,0 +1,37 @@
+Package: lifeconformal
+Type: Package
+Depends: R (>= 4.1.0)
+Title: Conformal Prediction for Censored Life History Data
+Version: 0.1.0
+Authors@R: person("Lu", "Mao", email = "lmao@biostat.wisc.edu",
+    role = c("aut", "cre"))
+Description: Conformal calibration of prediction regions for state occupation
+    times from censored multistate event histories. Fits working outcome and
+    censoring models on training subjects and calibrates a fixed prediction
+    score on independent subjects. Provides inverse-probability and augmented
+    calibration, deterministic Markov reward calculations, history-dependent
+    flexible transition models, and explicit numerical diagnostics.
+License: GPL-3
+URL: https://github.com/lmaowisc/lifeconformal
+BugReports: https://github.com/lmaowisc/lifeconformal/issues
+Contact: Lu Mao <lmao@biostat.wisc.edu>
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+Config/testthat/edition: 3
+RoxygenNote: 7.3.2
+VignetteBuilder: knitr
+NeedsCompilation: yes
+Imports:
+    survival,
+    splines,
+    stats,
+    graphics,
+    utils
+Suggests:
+    testthat (>= 3.2.1),
+    withr,
+    ranger,
+    rpart,
+    lpSolve,
+    knitr,
+    rmarkdown

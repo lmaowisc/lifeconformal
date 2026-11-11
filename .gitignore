@@ -1,0 +1,15 @@
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+.DS_Store
+*.Rcheck/
+lifeconformal_*.tar.gz
+lifeconformal_*.zip
+*.Rout
+*.Rout.fail
+*.o
+*.so
+*.dll
+*.dylib
+*.bundle

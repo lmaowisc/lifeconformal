@@ -1,0 +1,371 @@
+---
+title: "Train, calibrate, and predict life-history outcomes"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Train, calibrate, and predict life-history outcomes}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6,
+                    fig.height = 3.5)
+library(lifeconformal)
+```
+
+The workflow has two estimation steps. `life_train()` fits a score and nuisance
+models on training subjects. `life_calibrate()` uses independent subjects to
+calibrate that fixed score. `predict()` then produces regions for new baseline
+covariates. This version does not split samples automatically or use cross-fitting.
+
+## Prepare observed histories
+
+Use one row per observed state entry or end of follow-up. Every row carries a
+subject identifier, time since the common prediction origin, an event status,
+and any baseline covariates. Status zero always denotes censoring or the end of
+observation. Other status values identify destination states by default.
+
+This three-subject table illustrates a process with state zero (event-free),
+state one (relapse), and absorbing state two (death):
+
+```{r input-table}
+toy <- data.frame(
+  id = c(1, 1, 2, 3, 3),
+  time = c(1, 3, 5, 2, 4),
+  status = c(1, 2, 0, 1, 0),
+  age = c(60, 60, 55, 70, 70)
+)
+knitr::kable(toy)
+```
+
+Subject 1 enters state one at time one and state two at time three. Subject 2
+is censored at time five without a transition. Subject 3 enters state one at
+time two and is censored at time four. All begin in state zero; no artificial
+event at zero is required. Covariates stay constant within a subject, and records
+must already be chronologically ordered. The package rejects ambiguous tied
+transitions, missing required values, and inconsistent histories.
+
+Input checks run before fitting and report the affected field and, when
+available, the subject and original input row. For example:
+
+```{r invalid-time}
+invalid <- toy
+invalid$time[2] <- NA_real_
+tryCatch(
+  life_train(LifeHist(time, status) ~ age, data = invalid,
+             absorbing = 2, targets = list(relapse_free = 0), tau = 5),
+  error = conditionMessage
+)
+```
+
+Correct the source record and rerun the call. Records are neither discarded nor
+reordered automatically. These requirements also apply to calibration histories:
+
+| Field or record | Required format |
+| --- | --- |
+| Identifiers | One nonmissing, nonempty identifier per row; repeated values identify the same subject |
+| Times | Finite, nonnegative elapsed times in chronological order within subject; actual transitions occur after time zero |
+| Status | Zero ends observation; other codes must map to the destination state |
+| Final record | A censoring record or entry into a declared absorbing state; no subsequent records |
+| Baseline covariates | Observed values that remain constant within subject |
+| New covariates | Training-compatible types, factor levels, and valid formula-transformation domains |
+
+Two transitions at the same time are ambiguous. A transition followed by a
+censoring record at that same time is allowed. Explicit intervals additionally
+require contiguous times and a `from` state matching the preceding destination.
+Errors describe the relevant rule rather than inferring an unobserved transition.
+
+The table explains the format; it is too small to illustrate model fitting well.
+For a runnable analysis, generate independent synthetic subjects with one possible
+transition, from state zero to terminal state two:
+
+```{r synthetic-data}
+histories <- life_example_data(n = 120, seed = 1)
+head(histories)
+```
+
+These artificial data include a mild age association, independent censoring
+conditional on age, and administrative follow-up ending at time eight. Times use
+arbitrary units. They make no clinical or statistical performance claim. The
+data generator uses simulation; the default Markov prediction calculations below
+are deterministic.
+
+Keep all records for a subject in one sample. The generated subjects are
+independent and identically generated, so using the first 80 for training is a
+simple reproducible split. For observational data, choose a split appropriate to
+the study design before fitting or evaluating models.
+
+```{r split-subjects}
+training_ids <- unique(histories$id)[seq_len(80)]
+training <- histories[histories$id %in% training_ids, , drop = FALSE]
+calibration <- histories[!histories$id %in% training_ids, , drop = FALSE]
+stopifnot(length(intersect(training$id, calibration$id)) == 0)
+```
+
+## Train the score and working models
+
+Predict occupation time in state zero through time five. With a single
+transition to death, this is survival time restricted to the horizon.
+
+```{r train}
+fit <- life_train(
+  LifeHist(time, status) ~ age,
+  data = training,
+  absorbing = 2,
+  targets = list(alive = 0),
+  tau = 5
+)
+fit
+```
+
+The formula selects the age predictor; other data columns do not enter the
+model automatically. The defaults use identifier column `id`, initial state
+zero, Cox censoring regression, and transition-specific Markov-Cox outcome
+intensities. The outcome fit supplies target means and scales for the score and
+is reused for augmentation. The target, horizon, and absorbing states are explicit.
+
+The fitted object contains reusable functions and all fitted preprocessing.
+Predicting from the training fit returns the score's moments, before calibration:
+
+```{r trained-moments}
+new_patients <- data.frame(id = c("new-1", "new-2"), age = c(50, 70))
+moments <- predict(fit, newdata = new_patients)
+moments$mean
+moments$scale
+```
+
+## Calibrate independently, then predict
+
+Augmented inverse-probability weighting is the default. The same trained object
+also supports the IPW estimator:
+
+```{r calibrate}
+cal_aipw <- life_calibrate(fit, data = calibration, alpha = 0.10)
+cal_ipw <- life_calibrate(fit, data = calibration, alpha = 0.10,
+                         method = "ipw")
+cal_aipw
+cal_ipw
+```
+
+IPW uses observed coverage determinations and censoring weights. Augmentation
+also uses conditional coverage given partial histories. The IPW branch skips
+those conditional-coverage predictions and augmentation sums. Neither call
+refits the score or nuisance models.
+
+```{r calibrated-predictions}
+regions <- predict(cal_aipw, newdata = new_patients)
+regions$bounds
+predict(cal_ipw, newdata = new_patients)$bounds
+```
+
+Bounds use the time units of the data and are intersected with the target's
+structural support. Here that support is `[0, 5]`. A returned full-support region
+is an explicit possible result, including when a small sample cannot reach the
+requested rank-adjusted cutoff or the estimated curve does not cross it.
+
+The requested 90% level is nominal. Its interpretation requires the method's
+sampling, censoring, positivity, and nuisance-estimation assumptions. IPW
+requires a consistent estimate of the censoring distribution. Augmented
+calibration attains at least nominal coverage asymptotically if either the
+censoring model or the conditional coverage model is correct, under the
+corresponding convergence conditions.
+
+Inspect the raw coverage curve and numerical diagnostics:
+
+```{r diagnostics}
+cal_aipw$full_support
+cal_aipw$reason
+cal_aipw$diagnostics$numerical
+cal_ipw$diagnostics$numerical
+```
+
+```{r coverage-curve}
+plot(cal_aipw)
+```
+
+The dashed line is the actual rank-adjusted cutoff. The package takes the first
+crossing on the supplied threshold grid. Raw estimated coverage can be nonmonotone;
+signed augmented contributions are retained. The method does not smooth or clip
+the curve to make it look like a distribution function.
+
+Save the calibrated object to retain its frozen models, preprocessing, target
+definitions, and threshold:
+
+```{r save-and-restore}
+saved <- tempfile(fileext = ".rds")
+saveRDS(cal_aipw, saved)
+restored <- readRDS(saved)
+stopifnot(isTRUE(all.equal(predict(restored, new_patients)$bounds,
+                           regions$bounds)))
+unlink(saved)
+```
+
+## Other data interfaces and states
+
+The vector interface has the same computation and accepts a named covariate
+matrix or data frame:
+
+```{r vector-interface}
+fit_vectors <- life_train(
+  x = training["age"], id = training$id,
+  time = training$time, status = training$status,
+  absorbing = 2, targets = list(alive = 0), tau = 5
+)
+stopifnot(isTRUE(all.equal(predict(fit_vectors, new_patients)$mean,
+                           moments$mean)))
+```
+
+Use the same representation for its calibration sample:
+
+```{r vector-calibration}
+cal_vectors <- life_calibrate(
+  fit_vectors,
+  x = calibration["age"], id = calibration$id,
+  time = calibration$time, status = calibration$status,
+  method = "ipw"
+)
+stopifnot(isTRUE(all.equal(predict(cal_vectors, new_patients)$bounds,
+                           predict(cal_ipw, new_patients)$bounds)))
+```
+
+Explicit transition intervals are also supported. For the single-transition
+synthetic example, the equivalent input is:
+
+```{r explicit-intervals}
+interval_training <- transform(
+  training, start = 0, stop = time, from = 0,
+  to = ifelse(status == 2, 2, NA_real_), event = status == 2
+)
+fit_intervals <- life_train(
+  LifeHist(start = start, stop = stop, from = from, to = to, event = event) ~ age,
+  data = interval_training,
+  absorbing = 2, targets = list(alive = 0), tau = 5
+)
+stopifnot(isTRUE(all.equal(predict(fit_intervals, new_patients,
+                                   initial_state = 0)$mean,
+                           moments$mean)))
+```
+
+For event-status data, `initial_state = 0` is the default. Set a common different
+label with `initial_state = "home"`, or use a baseline column, such as
+`initial_state = ~ baseline_state`, when subjects start in different states.
+That column must be constant within subject and supplied for new patients.
+For explicit intervals, an omitted initial state is inferred from the first
+`from` value; then provide `initial_state` when predicting for new subjects, as
+above, or specify a common initial state explicitly during training.
+Absorbing states are always declared; use `absorbing = c(3, 4)` for
+two terminal states or `absorbing = integer(0)` for none. States without observed
+exits are not automatically absorbing.
+
+A return to state zero needs a nonzero event code because status zero remains
+reserved for censoring. For example:
+
+```{r return-to-zero}
+return_example <- data.frame(
+  id = c(1, 1, 1), time = c(2, 4, 7), status = c(1, 3, 0),
+  age = c(60, 60, 60)
+)
+status_map <- c("1" = 1, "2" = 2, "3" = 0)
+return_example
+```
+
+This patient enters state one at time two, returns to state zero at time four,
+and is censored at time seven. Supply this `status_map` in `life_train()` when
+analyzing a suitably sized dataset with that encoding. A terminal entry completes
+the path, so it does not require a final censoring row. A subject initially in an
+absorbing state is already complete at the origin.
+
+For the three-state relapse/death example, a joint target specification could be
+`targets = list(event_free = 0, alive = c(0, 1))`. A common maximum standardized
+score then calibrates the target vector jointly. Returned coordinate bounds are
+conservative envelopes of that joint region’s coordinate projections; its
+overlap and support constraints are retained.
+
+The fitted transition graph uses transitions observed in training. Structural
+support is separate: an absent empirical transition does not prove that it is
+impossible. Only supply `allowed_transitions` when the restriction is substantively
+known, for example a from/to table describing an established progressive process.
+
+## Choose working models and computation
+
+Censoring and outcome choices are independent:
+
+| Component | Default | Alternatives |
+| --- | --- | --- |
+| Censoring | `"cox"` | `"survival_forest"` |
+| Outcome | `"markov_cox"` | `"transition_forest"`, `"transition_neural"` |
+
+Specify a different censoring predictor formula with `censor_formula`, and pass
+backend controls in `censor_options` and `outcome_options`. For example, this keeps
+the deterministic Markov outcome model and selects a censoring forest:
+
+```{r censor-forest, eval=FALSE}
+fit_with_forest_censor <- life_train(
+  LifeHist(time, status) ~ age, data = training,
+  absorbing = 2, targets = list(alive = 0), tau = 5,
+  censor_model = "survival_forest",
+  censor_options = list(num_trees = 200L, min_node_size = 10L),
+  seed = 11
+)
+```
+
+This option requires `ranger`. Outcome intensity forests instead use `rpart`
+exposure/count trees with whole-subject bootstrap sampling. The neural option
+uses a tanh/softplus transition-intensity network fitted by `stats::optim()`.
+Both flexible outcome families can use duration in state and previous transitions.
+They use reproducible continuation draws for target prediction and augmentation;
+the Markov-Cox branch uses deterministic recursions throughout.
+
+These optional examples are shown without executing the additional model fits
+when building the introduction:
+
+```{r flexible-outcomes, eval=FALSE}
+fit_tree <- life_train(
+  LifeHist(time, status) ~ age, data = training,
+  absorbing = 2, targets = list(alive = 0), tau = 5,
+  outcome_model = "transition_forest",
+  outcome_options = list(num_trees = 100L, step_size = 0.1),
+  control = list(draws = 1000L), seed = 12
+)
+
+fit_neural <- life_train(
+  LifeHist(time, status) ~ age, data = training,
+  absorbing = 2, targets = list(alive = 0), tau = 5,
+  outcome_model = "transition_neural",
+  outcome_options = list(hidden = 4L, decay = 0.01,
+                         maxit = 1000L, step_size = 0.1),
+  control = list(draws = 1000L), seed = 13
+)
+```
+
+The model and numeric controls are recorded in the fitted object. For Cox models,
+`ties = "breslow"` is the default and `"efron"` is available. The default scale
+floor is `0.01 * tau`; fitted censoring survival is floored at `1e-8`. A survival
+floor truncates inverse weights and changes the estimator, so inspect positivity
+and sensitivity instead of interpreting the floor as evidence of adequate follow-up.
+
+Direct working-probability prediction uses `grid_size = 128L`,
+`max_nodes = 100000L`, and `probability_tolerance = 0.01` by default. Calibration
+uses `calibration_accuracy = "auto"`: with Markov augmentation it starts at
+grid16, unless a grid was explicitly supplied, and refines until signed numerical
+bounds establish the first crossing over the fixed threshold grid. Other
+probabilities may remain less precise; inspect `threshold_stable` and
+`probability_tolerance_met` separately. To enforce precision for every conditional
+probability, supply `control = list(calibration_accuracy = "probability")`.
+Numerical brackets describe discretization uncertainty in the fitted
+distribution, excluding floating-point rounding. They are separate from
+statistical coverage guarantees and are not coverage confidence intervals. An unresolved threshold or exhausted resource
+budget gives an informative error. Markov calculations remain deterministic.
+
+For flexible outcomes, decrease `outcome_options$step_size` to refine the time
+approximation and increase `control$draws` to examine Monte Carlo precision.
+Refit and recalibrate when changing the trained score's numerical specification.
+Model tuning belongs to training data. Do not tune the score using the independent
+calibration outcomes and then describe it as frozen.
+
+## Reproducing an analysis
+
+For reproducible analyses, retain the script, fitted object, chosen settings,
+and `sessionInfo()`. Training and calibration identifiers should identify subjects
+consistently across samples; separate numbering alone must not disguise reuse of
+the same subjects.
