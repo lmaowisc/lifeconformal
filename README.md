@@ -22,20 +22,23 @@ remotes::install_github("lmaowisc/lifeconformal", dependencies = TRUE,
 ## Example
 
 ```r
-library(lifeconformal)
-histories <- life_example_data(120, seed = 1)
-training <- histories[histories$id <= 80, ]
-calibration <- histories[histories$id > 80, ]
-fit <- life_train(
-  LifeHist(time, status) ~ age,
-  data = training, absorbing = 2,
-  targets = list(alive = 0), tau = 5
-)
-cal <- life_calibrate(fit, data = calibration)
-predict(cal, newdata = data.frame(age = c(50, 70)))
+library(lifeconformal)                         # Load the package
+histories <- life_example_data(120, seed = 1)  # Simulate 120 patient histories
+training <- histories[histories$id <= 80, ]    # Use 80 patients for training
+calibration <- histories[histories$id > 80, ]  # Reserve 40 patients for calibration
 
-# Reuse the trained score for inverse weighting alone.
-cal_ipw <- life_calibrate(fit, data = calibration, method = "ipw")
+fit <- life_train(               # Fit outcome and censoring models
+  LifeHist(time, status) ~ age,  # Model the life history by baseline age
+  data = training,               # Use the training histories
+  absorbing = 2,                 # State 2 (death) is absorbing
+  targets = list(alive = 0),     # Predict time alive in state 0
+  tau = 5)                       # Predict through five time units
+
+cal <- life_calibrate(fit, data = calibration)       # Augmented calibration (default)
+predict(cal, newdata = data.frame(age = c(50, 70)))  # 90% prediction intervals at ages 50 and 70
+
+cal_ipw <- life_calibrate(fit, data = calibration,  # Reuse the same fit and patients
+                          method = "ipw")           # Inverse-probability weighting alone
 ```
 
 Each row records a transition or the end of observation. In the example, state
