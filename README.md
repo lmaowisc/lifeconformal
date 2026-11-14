@@ -4,6 +4,9 @@ Predict occupation times from censored multistate life histories. Train a fixed
 score and nuisance models, calibrate on independent subjects, and obtain scalar
 intervals or joint prediction regions for new patients.
 
+**Preprint.** Lu Mao (2026). Conformal prediction for censored life history data.
+[arXiv:2611.15724](https://arxiv.org/abs/2611.15724).
+
 ## Installation
 
 Install the package from GitHub with R 4.1.0 or later. Installation from source
