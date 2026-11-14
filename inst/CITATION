@@ -5,3 +5,12 @@ bibentry(
   year = "2026",
   note = paste("R package version", meta$Version)
 )
+
+bibentry(
+  bibtype = "Misc",
+  title = "Conformal prediction for censored life history data",
+  author = person("Lu", "Mao"),
+  year = "2026",
+  note = "arXiv:2611.15724",
+  url = "https://arxiv.org/abs/2611.15724"
+)
